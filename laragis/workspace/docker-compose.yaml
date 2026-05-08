@@ -1,0 +1,45 @@
+services:
+  # workspace:
+  #   image: docker.io/laragis/workspace:${WORKSPACE_VERSION}
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   volumes:
+  #     - .:/home/ubuntu/workspace
+  #     - ubuntu_home:/home/ubuntu
+
+  docker-ssh:
+    image: serversideup/docker-ssh
+    hostname: ubuntu
+    ports:
+      - "2222:22"
+    environment:
+      DEBUG: false
+      PGID: 1000
+      PUID: 1000
+      SSH_GROUP: ubuntu
+      SSH_USER: ubuntu
+      SSH_PORT: 22
+      ALLOWED_IPS: "AllowUsers ubuntu"
+      AUTHORIZED_KEYS: >
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJFEjxchaHgODivGB+ESRjoXMimYTOJtfTiUa1dURV6m workspace@laragis.vn
+
+  openssh-server:
+    image: lscr.io/linuxserver/openssh-server:latest
+    hostname: ubuntu
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Ho_Chi_Minh
+      - PUBLIC_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJFEjxchaHgODivGB+ESRjoXMimYTOJtfTiUa1dURV6m workspace@laragis.vn
+      - PASSWORD_ACCESS=true
+      - SUDO_ACCESS=true
+      - USER_NAME=ubuntu
+      - USER_PASSWORD=ubuntu
+      - LOG_STDOUT=false
+    ports:
+      - 2200:2222
+
+volumes:
+  ubuntu_home:
+    external: true
