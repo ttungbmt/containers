@@ -1,79 +1,68 @@
-# ── Stage 1: system ──────────────────────────────────────────────────────────
-# Stable layer: apt packages, SSH config, ubuntu user.
-# Rebuilt only when system-level dependencies change.
-FROM ubuntu:22.04 AS system
-ENV DEBIAN_FRONTEND=noninteractive
+FROM serversideup/docker-ssh:latest AS docker-ssh
 
-RUN apt-get update && apt-get install -y \
-    curl \
-    tar \
-    unzip \
-    bash \
-    sudo \
-    python3-pip \
-    openssh-client \
-    openssh-server \
-    && rm -rf /var/lib/apt/lists/*
+FROM ubuntu:26.04 AS base
 
-RUN mkdir -p /var/run/sshd \
-    && sed -i \
-        -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' \
-        -e 's/^#\?AllowAgentForwarding.*/AllowAgentForwarding yes/' \
-        -e 's/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/' \
-        /etc/ssh/sshd_config \
-    && ssh-keygen -A
+ENV ALLOWED_IPS="AllowUsers tunnel" \
+    DEBUG_MODE="false" \
+    DEBIAN_FRONTEND=noninteractive \
+    LANG="en_US.UTF-8" \
+    LANGUAGE="en_US.UTF-8" \
+    LC_ALL="en_US.UTF-8" \
+    PGID=9999 \
+    PUID=9999 \
+    SSH_HOST_KEY_DIR="/etc/ssh/ssh_host_keys" \
+    SSH_PORT="2222" \
+    SSH_USER="tunnel"
 
-RUN groupadd -g 1000 ubuntu \
-    && useradd -m -u 1000 -g ubuntu -s /bin/zsh ubuntu \
-    && echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu \
-    && chmod 0440 /etc/sudoers.d/ubuntu
+ARG PACKAGE_DEPENDENCIES="sudo,curl,openssh-server,iputils-ping,locales,rsync,tini" \
+    REPOSITORY_BUILD_VERSION="dev"
 
-# ── Stage 2: tools ───────────────────────────────────────────────────────────
-# Heavy layer: installs all DevOps tools via gc.
-# Each RUN is a separate cache layer — reorder to put frequently-changed tools last.
-FROM system AS tools
+COPY --from=docker-ssh /entrypoint.sh /entrypoint.sh
+COPY --from=docker-ssh /usr/local/bin /usr/local/bin
 
-WORKDIR /home/ubuntu/workspace
-RUN chown ubuntu:ubuntu /home/ubuntu/workspace
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y $(echo ${PACKAGE_DEPENDENCIES} | tr ',' ' ') && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    \
+    # Generate required locales
+    echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=en_US.UTF-8 && \
+    \
+    # Set password for ubuntu user
+    echo "ubuntu:ubuntu" | chpasswd && \
+    \
+    # Create unprivileged user
+    serversideup-create-unprivileged-user "$SSH_USER" "${PUID}" "${PGID}" && \
+    \
+    # Set proper permissions
+    mkdir -p /home/$SSH_USER/.ssh $SSH_HOST_KEY_DIR && \
+    chown -R $SSH_USER:$SSH_USER $SSH_HOST_KEY_DIR /home/$SSH_USER/.ssh && \
+    chmod 700 /home/$SSH_USER/.ssh && \
+    \
+    # Create run directory
+    mkdir -p /run/sshd && \
+    \
+    # Remove default SSH host keys
+    rm -f /etc/ssh/ssh_host_*_key*
 
-RUN curl -fsSL https://raw.githubusercontent.com/ttungbmt/os-scripts/refs/heads/master/gc -o /usr/local/bin/gc \
-    && chmod +x /usr/local/bin/gc
+# Expose the SSH port
+EXPOSE 2222
 
-USER ubuntu
+LABEL org.opencontainers.image.title="serversideup/docker-ssh" \
+    org.opencontainers.image.description="Simple SSH container. Great for secure connections into clusters." \
+    org.opencontainers.image.url="https://github.com/serversideup/docker-ssh" \
+    org.opencontainers.image.source="https://github.com/serversideup/docker-ssh" \
+    org.opencontainers.image.documentation="https://github.com/serversideup/docker-ssh" \
+    org.opencontainers.image.vendor="ServerSideUp" \
+    org.opencontainers.image.authors="Jay Rogers (@jaydrogers)" \
+    org.opencontainers.image.version="${REPOSITORY_BUILD_VERSION}" \
+    org.opencontainers.image.licenses="GPL-3.0-or-later"
 
-# Rarely changes
-RUN gc install multi git bats rsync
+HEALTHCHECK --interval=30s --timeout=30s --start-period=30s --retries=3 \
+    CMD pgrep -f "sshd.*-D" > /dev/null || exit 1
 
-# Runtime manager (pin version separately for cache isolation)
-RUN gc install multi mise
-
-# Language runtimes via mise
-RUN gc install python --version 3.11 && \
-    gc install multi node bun
-
-# Ruby + Bashly (dev tooling)
-RUN gc install multi gem bashly
-
-# Shell environment tools
-RUN gc install multi starship zsh antidote direnv zoxide bat eza fzf fd ripgrep thefuck mcfly
-
-# Frequently updated — keep last for best cache hit rate
-RUN gc install claude
-
-# Bootstrap zsh plugins
-RUN zsh -c 'gc setup antidote && source ~/.zshrc && antidote update'
-
-# ── Stage 3: runtime ─────────────────────────────────────────────────────────
-# Final image: clean system + tool artifacts copied from tools stage.
-# Does not carry build-time temp files or intermediate apt caches.
-FROM system AS runtime
-
-WORKDIR /home/ubuntu/workspace
-RUN chown ubuntu:ubuntu /home/ubuntu/workspace
-
-COPY --from=tools /usr/local/bin/  /usr/local/bin/
-COPY --from=tools /usr/local/share/ /usr/local/share/
-COPY --from=tools --chown=ubuntu:ubuntu /home/ubuntu/ /home/ubuntu/
-
-EXPOSE 22
-CMD ["/usr/sbin/sshd", "-D"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+CMD ["/usr/sbin/sshd", "-D", "-e"]

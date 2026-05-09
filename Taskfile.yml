@@ -2,11 +2,29 @@
 
 version: '3'
 
-vars:
-  GREETING: Hello, World!
+silent: true
 
 tasks:
   default:
     cmds:
       - echo "{{.GREETING}}"
-    silent: true
+
+  up:
+    dir: laragis/workspace
+    cmds:
+      - docker compose up -d workspace
+
+  down:
+    dir: laragis/workspace
+    cmds:
+      - docker compose down workspace
+  
+  shell:
+    dir: laragis/workspace
+    cmds:
+      - docker compose exec -u ubuntu workspace bash
+
+  ssh:
+    dir: laragis/workspace
+    cmds:
+      - ssh -i ./id_ed25519_workspace -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tunnel@localhost
